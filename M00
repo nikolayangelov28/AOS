@@ -1,0 +1,195 @@
+diff --git a/projects/aos/apps/tty_test/src/tty_test.c b/projects/aos/apps/tty_test/src/tty_test.c
+index 60adcb3..57f055b 100644
+--- a/projects/aos/apps/tty_test/src/tty_test.c
++++ b/projects/aos/apps/tty_test/src/tty_test.c
+@@ -26,6 +26,7 @@
+ #include <stdint.h>
+ #include <sel4/sel4.h>
+ #include <syscalls.h>
++#include <string.h>
+
+ #include "ttyout.h"
+
+@@ -50,7 +51,9 @@ int main(void)
+     ttyout_init();
+
+     do {
+-        fputs("task:\tHello world, I'm\ttty_test!\n", stdout);
++       //fputs("task:\tHello world, I'm\ttty_test!\n", stdout);
++       char *s = "Test M0 IPC message\n";
++       sos_write(s, strlen(s));
+         thread_block();
+         // sleep(1);    // Implement this as a syscall
+     } while (1);
+diff --git a/projects/aos/apps/tty_test/src/ttyout.c b/projects/aos/apps/tty_test/src/ttyout.c
+index 3a1aea5..fd36693 100644
+--- a/projects/aos/apps/tty_test/src/ttyout.c
++++ b/projects/aos/apps/tty_test/src/ttyout.c
+@@ -29,6 +29,8 @@
+
+ #include <sel4/sel4.h>
+
++#define SOS_SYSCALL_WRITE 2
++
+ void ttyout_init(void)
+ {
+     /* Perform any initialisation you require here */
+@@ -43,13 +45,35 @@ static size_t sos_debug_print(const void *vData, size_t count)
+         seL4_DebugPutChar(realdata[i]);
+     }
+ #endif
+-    return count;
++    return count;
++
+ }
+
+ size_t sos_write(void *vData, size_t count)
+ {
+     //implement this to use your syscall
+-    return sos_debug_print(vData, count);
++   // return sos_debug_print(vData, count);
++    size_t length;
++    size_t written = 0;
++
++    seL4_MessageInfo_t tag;
++    const unsigned int maxlenght = (seL4_MsgMaxLength - 2)*sizeof(seL4_Word);
++    const char *s = (char*)vData;
++
++    for (length = count; count > 0; count = count - length) {
++        if (length > maxlenght) {
++            length = maxlenght;
++        }
++        tag = seL4_MessageInfo_new(0, 0, 0, (length + sizeof(seL4_Word) - 1) / sizeof(seL4_Word) + 2);
++
++        seL4_SetMR(0, SOS_SYSCALL_WRITE);
++        seL4_SetMR(1, length);
++
++        memcpy(&seL4_GetIPCBuffer()->msg[2],&s[written], length);
++        seL4_Call(SYSCALL_ENDPOINT_SLOT, tag);
++        written += seL4_GetMR(0);
++    }
++    return written;
+ }
+
+ size_t sos_read(void *vData, size_t count)
+diff --git a/projects/aos/settings.cmake b/projects/aos/settings.cmake
+index 96b0059..3a2be15 100644
+--- a/projects/aos/settings.cmake
++++ b/projects/aos/settings.cmake
+@@ -26,7 +26,7 @@ get_filename_component(repo_dir ${resolved_path} DIRECTORY)
+
+ include(${project_dir}/tools/seL4/cmake-tool/helpers/application_settings.cmake)
+
+-correct_platform_strings()
++#correct_platform_strings()
+
+
+
+ size_t sos_read(void *vData, size_t count)
+diff --git a/projects/aos/settings.cmake b/projects/aos/settings.cmake
+index 96b0059..3a2be15 100644
+--- a/projects/aos/settings.cmake
++++ b/projects/aos/settings.cmake
+@@ -26,7 +26,7 @@ get_filename_component(repo_dir ${resolved_path} DIRECTORY)
+
+ include(${project_dir}/tools/seL4/cmake-tool/helpers/application_settings.cmake)
+
+-correct_platform_strings()
++#correct_platform_strings()
+
++
++    seL4_MessageInfo_t tag;
++    const unsigned int maxlenght = (seL4_MsgMaxLength - 2)*sizeof(seL4_Word);
++    const char *s = (char*)vData;
++
++    for (length = count; count > 0; count = count - length) {
++        if (length > maxlenght) {
++            length = maxlenght;
++        }
++        tag = seL4_MessageInfo_new(0, 0, 0, (length + sizeof(seL4_Word) - 1) / sizeof(seL4_Word) + 2);
++
++        seL4_SetMR(0, SOS_SYSCALL_WRITE);
++        seL4_SetMR(1, length);
++
++        memcpy(&seL4_GetIPCBuffer()->msg[2],&s[written], length);
++        seL4_Call(SYSCALL_ENDPOINT_SLOT, tag);
++        written += seL4_GetMR(0);
++    }
++    return written;
+ }
+
+ size_t sos_read(void *vData, size_t count)
+diff --git a/projects/aos/settings.cmake b/projects/aos/settings.cmake
+index 96b0059..3a2be15 100644
+--- a/projects/aos/settings.cmake
++++ b/projects/aos/settings.cmake
+@@ -26,7 +26,7 @@ get_filename_component(repo_dir ${resolved_path} DIRECTORY)
+
+ include(${project_dir}/tools/seL4/cmake-tool/helpers/application_settings.cmake)
+
+-correct_platform_strings()
++#correct_platform_strings()
+
+ include(${project_dir}/kernel/configs/seL4Config.cmake)
+
+diff --git a/projects/aos/sos/src/main.c b/projects/aos/sos/src/main.c
+index 631e4c0..8c8f80f 100644
+--- a/projects/aos/sos/src/main.c
++++ b/projects/aos/sos/src/main.c
+@@ -68,6 +68,7 @@
+  * A dummy starting syscall
+  */
+ #define SOS_SYSCALL0 0
++#define SOS_SYSCALL_WRITE 2
+
+ /* The linker will link this symbol to the start address  *
+  * of an archive of attached applications.                */
+@@ -102,14 +103,18 @@ static struct {
+     seL4_CPtr stack;
+ } tty_test_process;
+
++struct serial *sos_serialps;
+
+ void handle_syscall(UNUSED seL4_Word badge, UNUSED int num_args, seL4_CPtr reply)
+ {
+
+     /* get the first word of the message, which in the SOS protocol is the number
+      * of the SOS "syscall". */
++    seL4_MessageInfo_t reply_msg;
+     seL4_Word syscall_number = seL4_GetMR(0);
+
++    serial_send(sos_serialps, "Test serial\n", 15);
++
+     /* Process system call */
+     switch (syscall_number) {
+     case SOS_SYSCALL0:
+@@ -124,6 +129,19 @@ void handle_syscall(UNUSED seL4_Word badge, UNUSED int num_args, seL4_CPtr reply
+          * send does not consume the reply object unlike the non-MCS kernel */
+         break;
+
++    case SOS_SYSCALL_WRITE:
++        ZF_LOGV("syscall: thread example made syscall 0!\n");
++        seL4_Word length = seL4_GetMR(1);
++        char *s = (char*)&seL4_GetIPCBuffer()->msg[2];
++        serial_send(sos_serialps, s, length);
++        /* construct a reply message of length 1 */
++        reply_msg = seL4_MessageInfo_new(0, 0, 0, 1);
++        /* Set the first (and only) word in the message to 0 */
++        seL4_SetMR(0, length);
++        /* Send the reply to the saved reply capability. */
++        seL4_Send(reply, reply_msg);
++        cspace_free_slot(&cspace, reply);
++
+     default:
+         ZF_LOGE("Unknown syscall %lu\n", syscall_number);
+         /* don't reply to an unknown syscall */
+@@ -549,6 +567,8 @@ NORETURN void *main_continued(UNUSED void *arg)
+      * so touching the watchdog timers here is not recommended!) */
+     void *timer_vaddr = sos_map_device(&cspace, PAGE_ALIGN_4K(TIMER_MAP_BASE), PAGE_SIZE_4K);
+
++    sos_serialps = serial_init();
++
+     /* Initialise the network hardware. */
+     printf("Network init\n");
+     network_init(&cspace, timer_vaddr, ntfn);
+(END)
